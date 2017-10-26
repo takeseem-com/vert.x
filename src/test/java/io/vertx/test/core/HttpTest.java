@@ -425,13 +425,17 @@ public abstract class HttpTest extends HttpTestBase {
     } else {
       req = client.request(method, DEFAULT_HTTP_PORT, DEFAULT_HTTP_HOST, uri, handler);
     }
-    testSimpleRequest(uri, method, req);
+    testSimpleRequest(uri, method, req, absolute);
   }
 
-  private void testSimpleRequest(String uri, HttpMethod method, HttpClientRequest request) {
+  private void testSimpleRequest(String uri, HttpMethod method, HttpClientRequest request, boolean absolute) {
     int index = uri.indexOf('?');
     String path = index == -1 ? uri : uri.substring(0, index);
     String query = index == -1 ? null : uri.substring(index + 1);
+    if (absolute) {
+      server.close();
+      server = vertx.createHttpServer(createBaseServerOptions().setSsl(false).setUseAlpn(false));
+    }
     server.requestHandler(req -> {
       String expectedPath = req.method() == HttpMethod.CONNECT && req.version() == HttpVersion.HTTP_2 ? null : path;
       String expectedQuery = req.method() == HttpMethod.CONNECT && req.version() == HttpVersion.HTTP_2 ? null : query;
@@ -2248,9 +2252,10 @@ public abstract class HttpTest extends HttpTestBase {
   public void testSetHandlersAfterListening2() throws Exception {
     server.requestHandler(noOpHandler());
 
-    server.listen();
+    server.listen(onSuccess(v -> testComplete()));
     assertIllegalStateException(() -> server.requestHandler(noOpHandler()));
     assertIllegalStateException(() -> server.websocketHandler(noOpHandler()));
+    await();
   }
 
   @Test
@@ -2267,8 +2272,9 @@ public abstract class HttpTest extends HttpTestBase {
   @Test
   public void testListenTwice() throws Exception {
     server.requestHandler(noOpHandler());
-    server.listen();
+    server.listen(onSuccess(v -> testComplete()));
     assertIllegalStateException(() -> server.listen());
+    await();
   }
 
   @Test
@@ -2905,38 +2911,35 @@ public abstract class HttpTest extends HttpTestBase {
   }
 
   @Test
-  public void testSetHandlersOnEnd() {
+  public void testSetHandlersOnEnd() throws Exception {
     String path = "/some/path";
     server.requestHandler(req -> req.response().setStatusCode(200).end());
-    server.listen(ar -> {
-      assertTrue(ar.succeeded());
-      HttpClientRequest req = client.request(HttpMethod.GET, HttpTestBase.DEFAULT_HTTP_PORT, HttpTestBase.DEFAULT_HTTP_HOST, path);
-      req.handler(resp -> {
-      });
-      req.endHandler(done -> {
-        try {
-          req.handler(arg -> {
-          });
-          fail();
-        } catch (Exception ignore) {
-        }
-        try {
-          req.exceptionHandler(arg -> {
-          });
-          fail();
-        } catch (Exception ignore) {
-        }
-        try {
-          req.endHandler(arg -> {
-          });
-          fail();
-        } catch (Exception ignore) {
-        }
-        testComplete();
-      });
-      req.end();
-
+    startServer();
+    HttpClientRequest req = client.request(HttpMethod.GET, HttpTestBase.DEFAULT_HTTP_PORT, HttpTestBase.DEFAULT_HTTP_HOST, path);
+    req.handler(resp -> {
     });
+    req.endHandler(done -> {
+      try {
+        req.handler(arg -> {
+        });
+        fail();
+      } catch (Exception ignore) {
+      }
+      try {
+        req.exceptionHandler(arg -> {
+        });
+        fail();
+      } catch (Exception ignore) {
+      }
+      try {
+        req.endHandler(arg -> {
+        });
+        fail();
+      } catch (Exception ignore) {
+      }
+      testComplete();
+    });
+    req.end();
     await();
   }
 
@@ -3400,7 +3403,8 @@ public abstract class HttpTest extends HttpTestBase {
         assertEquals(HttpMethod.PUT, req.method());
         assertEquals(body, expected);
         if (redirected.compareAndSet(false, true)) {
-          req.response().setStatusCode(307).putHeader(HttpHeaders.LOCATION, "http://localhost:8080/whatever").end();
+          String scheme = createBaseServerOptions().isSsl() ? "https" : "http";
+          req.response().setStatusCode(307).putHeader(HttpHeaders.LOCATION, scheme + "://localhost:8080/whatever").end();
         } else {
           req.response().end();
         }
@@ -3430,7 +3434,8 @@ public abstract class HttpTest extends HttpTestBase {
         assertEquals(HttpMethod.PUT, req.method());
         assertEquals(body, expected);
         if (redirect) {
-          req.response().setStatusCode(307).putHeader(HttpHeaders.LOCATION, "http://localhost:8080/whatever").end();
+          String scheme = createBaseServerOptions().isSsl() ? "https" : "http";
+          req.response().setStatusCode(307).putHeader(HttpHeaders.LOCATION, scheme + "://localhost:8080/whatever").end();
         } else {
           req.response().end();
         }
@@ -3471,7 +3476,8 @@ public abstract class HttpTest extends HttpTestBase {
         req.handler(buff -> {
           if (body.length() == 0) {
             HttpServerResponse resp = req.response();
-            resp.setStatusCode(307).putHeader(HttpHeaders.LOCATION, "http://localhost:8080/whatever");
+            String scheme = createBaseServerOptions().isSsl() ? "https" : "http";
+            resp.setStatusCode(307).putHeader(HttpHeaders.LOCATION, scheme + "://localhost:8080/whatever");
             if (expectFail) {
               resp.setChunked(true).write("whatever");
               vertx.runOnContext(v -> {
@@ -3553,7 +3559,8 @@ public abstract class HttpTest extends HttpTestBase {
       if (val > 16) {
         fail();
       } else {
-        req.response().setStatusCode(301).putHeader(HttpHeaders.LOCATION, "http://localhost:8080/otherpath").end();
+        String scheme = createBaseServerOptions().isSsl() ? "https" : "http";
+        req.response().setStatusCode(301).putHeader(HttpHeaders.LOCATION, scheme + "://localhost:8080/otherpath").end();
       }
     });
     startServer();
@@ -3572,7 +3579,8 @@ public abstract class HttpTest extends HttpTestBase {
     server.requestHandler(req -> {
       switch (redirections.getAndIncrement()) {
         case 0:
-          req.response().setStatusCode(307).putHeader(HttpHeaders.LOCATION, "http://localhost:8080/whatever").end();
+          String scheme = createBaseServerOptions().isSsl() ? "https" : "http";
+          req.response().setStatusCode(307).putHeader(HttpHeaders.LOCATION, scheme + "://localhost:8080/whatever").end();
           break;
       }
     });
@@ -3629,7 +3637,7 @@ public abstract class HttpTest extends HttpTestBase {
     AtomicInteger redirects = new AtomicInteger();
     server.requestHandler(req -> {
       redirects.incrementAndGet();
-      req.response().setStatusCode(301).putHeader(HttpHeaders.LOCATION, "http://localhost:" + port + "/whatever").end();
+      req.response().setStatusCode(301).putHeader(HttpHeaders.LOCATION, scheme + "://localhost:" + port + "/whatever").end();
     });
     startServer();
     HttpServer server2 = vertx.createHttpServer(options);

@@ -242,6 +242,7 @@ class ClientConnection extends Http1xConnectionBase implements HttpClientConnect
                                                   client.getOptions().getMaxWebsocketMessageSize());
       ws = webSocket;
       handshaker.finishHandshake(chctx.channel(), response);
+      ws.subProtocol(handshaker.actualSubprotocol());
       context.executeFromIO(() -> {
         log.debug("WebSocket handshake complete");
         if (metrics != null ) {
@@ -253,7 +254,7 @@ class ClientConnection extends Http1xConnectionBase implements HttpClientConnect
   }
 
   public boolean isValid() {
-    return chctx.channel().isOpen();
+    return !reset && chctx.channel().isOpen();
   }
 
   int getOutstandingRequestCount() {
@@ -387,6 +388,7 @@ class ClientConnection extends Http1xConnectionBase implements HttpClientConnect
         }
       }
     }
+    requestForResponse = null;
     currentResponse = null;
   }
 
@@ -430,21 +432,17 @@ class ClientConnection extends Http1xConnectionBase implements HttpClientConnect
     return super.getContext();
   }
 
-  public void resetRequest(long code) {
+  @Override
+  public void reset(long code) {
     if (!reset) {
       reset = true;
-      currentRequest = null;
-      requests.removeLast();
+      if (currentRequest != null) {
+        requests.removeLast();
+      }
       if (requests.size() == 0) {
         pool.responseEnded(this, true);
       }
     }
-  }
-
-  @Override
-  public void resetResponse(long code) {
-    reset = true;
-    pool.responseEnded(this, true);
   }
 
   private HttpRequest createRequest(HttpVersion version, HttpMethod method, String rawMethod, String uri, MultiMap headers) {

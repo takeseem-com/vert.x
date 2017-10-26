@@ -18,7 +18,6 @@ package io.vertx.core.impl;
 
 import io.netty.channel.EventLoop;
 import io.netty.channel.EventLoopGroup;
-import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.resolver.AddressResolverGroup;
 import io.netty.util.ResourceLeakDetector;
 import io.netty.util.concurrent.GenericFutureListener;
@@ -37,6 +36,7 @@ import io.vertx.core.datagram.DatagramSocket;
 import io.vertx.core.datagram.DatagramSocketOptions;
 import io.vertx.core.datagram.impl.DatagramSocketImpl;
 import io.vertx.core.dns.DnsClient;
+import io.vertx.core.dns.DnsClientOptions;
 import io.vertx.core.dns.impl.DnsClientImpl;
 import io.vertx.core.eventbus.EventBus;
 import io.vertx.core.eventbus.impl.EventBusImpl;
@@ -62,6 +62,7 @@ import io.vertx.core.net.impl.NetServerImpl;
 import io.vertx.core.net.impl.ServerID;
 import io.vertx.core.shareddata.SharedData;
 import io.vertx.core.shareddata.impl.SharedDataImpl;
+import io.vertx.core.net.impl.transport.Transport;
 import io.vertx.core.spi.VerticleFactory;
 import io.vertx.core.spi.VertxMetricsFactory;
 import io.vertx.core.spi.cluster.ClusterManager;
@@ -120,8 +121,8 @@ public class VertxImpl implements VertxInternal, MetricsProvider {
   final WorkerPool workerPool;
   final WorkerPool internalBlockingPool;
   private final ThreadFactory eventLoopThreadFactory;
-  private final NioEventLoopGroup eventLoopGroup;
-  private final NioEventLoopGroup acceptorEventLoopGroup;
+  private final EventLoopGroup eventLoopGroup;
+  private final EventLoopGroup acceptorEventLoopGroup;
   private final BlockedThreadChecker checker;
   private final boolean haEnabled;
   private final AddressResolver addressResolver;
@@ -133,6 +134,7 @@ public class VertxImpl implements VertxInternal, MetricsProvider {
   private final int defaultWorkerPoolSize;
   private final long defaultWorkerMaxExecTime;
   private final CloseHooks closeHooks;
+  private final Transport transport;
 
   VertxImpl() {
     this(new VertxOptions());
@@ -147,16 +149,24 @@ public class VertxImpl implements VertxInternal, MetricsProvider {
     if (Vertx.currentContext() != null) {
       log.warn("You're already on a Vert.x context, are you sure you want to create a new Vertx instance?");
     }
+    if (options.getPreferNativeTransport()) {
+      Transport nativeTransport = Transport.nativeTransport();
+      if (nativeTransport != null && nativeTransport.isAvailable()) {
+        transport = nativeTransport;
+      } else {
+        transport = Transport.JDK;
+      }
+    } else {
+      transport = Transport.JDK;
+    }
     closeHooks = new CloseHooks(log);
     checker = new BlockedThreadChecker(options.getBlockedThreadCheckInterval(), options.getWarningExceptionTime());
     eventLoopThreadFactory = new VertxThreadFactory("vert.x-eventloop-thread-", checker, false, options.getMaxEventLoopExecuteTime());
-    eventLoopGroup = new NioEventLoopGroup(options.getEventLoopPoolSize(), eventLoopThreadFactory);
-    eventLoopGroup.setIoRatio(NETTY_IO_RATIO);
+    eventLoopGroup = transport.eventLoopGroup(options.getEventLoopPoolSize(), eventLoopThreadFactory, NETTY_IO_RATIO);
     ThreadFactory acceptorEventLoopThreadFactory = new VertxThreadFactory("vert.x-acceptor-thread-", checker, false, options.getMaxEventLoopExecuteTime());
     // The acceptor event loop thread needs to be from a different pool otherwise can get lags in accepted connections
     // under a lot of load
-    acceptorEventLoopGroup = new NioEventLoopGroup(1, acceptorEventLoopThreadFactory);
-    acceptorEventLoopGroup.setIoRatio(100);
+    acceptorEventLoopGroup = transport.eventLoopGroup(1, acceptorEventLoopThreadFactory, 100);
 
     metrics = initialiseMetrics(options);
 
@@ -253,6 +263,16 @@ public class VertxImpl implements VertxInternal, MetricsProvider {
   @Override
   public NetClient createNetClient() {
     return createNetClient(new NetClientOptions());
+  }
+
+  @Override
+  public Transport transport() {
+    return transport;
+  }
+
+  @Override
+  public boolean isNativeTransportEnabled() {
+    return transport != Transport.JDK;
   }
 
   public FileSystem fileSystem() {
@@ -383,7 +403,12 @@ public class VertxImpl implements VertxInternal, MetricsProvider {
 
   @Override
   public DnsClient createDnsClient(int port, String host) {
-    return new DnsClientImpl(this, port, host);
+    return new DnsClientImpl(this, port, host, DnsClientOptions.DEFAULT_QUERY_TIMEOUT);
+  }
+
+  @Override
+  public DnsClient createDnsClient(DnsClientOptions options) {
+    return new DnsClientImpl(this, options.getPort(), options.getHost(), options.getQueryTimeout());
   }
 
   private VertxMetrics initialiseMetrics(VertxOptions options) {

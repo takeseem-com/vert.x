@@ -178,7 +178,11 @@ public class DeploymentManager {
         if (ar.succeeded()) {
           String resolvedName = ar.result();
           if (!resolvedName.equals(identifier)) {
-            deployVerticle(resolvedName, options, completionHandler);
+            try {
+              deployVerticle(resolvedName, options, completionHandler);
+            } catch (Exception e) {
+              completionHandler.handle(Future.failedFuture(e));
+            }
             return;
           } else {
             if (verticleFactory.blockingCreate()) {
@@ -489,12 +493,13 @@ public class DeploymentManager {
               if (deployCount.incrementAndGet() == verticles.length) {
                 reportSuccess(deploymentID, callingContext, completionHandler);
               }
-            } else if (!failureReported.get()) {
-              reportFailure(ar.cause(), callingContext, completionHandler);
+            } else if (failureReported.compareAndSet(false, true)) {
+              context.runCloseHooks(closeHookAsyncResult -> reportFailure(ar.cause(), callingContext, completionHandler));
             }
           });
         } catch (Throwable t) {
-          reportFailure(t, callingContext, completionHandler);
+          if (failureReported.compareAndSet(false, true))
+            context.runCloseHooks(closeHookAsyncResult -> reportFailure(t, callingContext, completionHandler));
         }
       });
     }

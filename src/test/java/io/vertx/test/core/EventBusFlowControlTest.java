@@ -65,7 +65,7 @@ public class EventBusFlowControlTest extends VertxTestBase {
     vertx.runOnContext(v -> {
       sendBatch(prod, wqms, numBatches, 0);
     });
-    await(10, TimeUnit.SECONDS);
+    await();
   }
 
   private void sendBatch(MessageProducer<String> prod, int batchSize, int numBatches, int batchNumber) {
@@ -83,6 +83,21 @@ public class EventBusFlowControlTest extends VertxTestBase {
         batchNumber++;
       }
     }
+  }
+
+  @Test
+  public void testDrainHandlerCalledWhenQueueAlreadyDrained() throws Exception {
+    MessageConsumer<String> consumer = eb.consumer("some-address");
+    consumer.handler(msg -> {});
+    MessageProducer<String> prod = eb.sender("some-address");
+    prod.setWriteQueueMaxSize(1);
+    prod.write("msg");
+    assertTrue(prod.writeQueueFull());
+    waitUntil(() -> !prod.writeQueueFull());
+    prod.drainHandler(v -> {
+      testComplete();
+    });
+    await();
   }
 
   @Test
